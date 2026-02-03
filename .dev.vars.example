@@ -1,0 +1,9 @@
+# Copy this to .dev.vars and fill in your values
+
+# Required: Google OAuth credentials
+GOOGLE_CLIENT_ID=your-google-client-id
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+
+# Optional: OpenAI for AI-powered chat processing
+# Without this, basic command matching will be used
+OPENAI_API_KEY=your-openai-key
