@@ -36,7 +36,14 @@ interface AuthState {
     name: string
     picture: string
   }
+  tokens?: {
+    access_token: string
+    refresh_token: string
+    expires_at: number
+  }
 }
+
+const STORAGE_KEY = 'mail-cal-ai-auth'
 
 export default function App() {
   const [messages, setMessages] = useState<Message[]>([
@@ -75,8 +82,20 @@ export default function App() {
   }, [messages])
 
   useEffect(() => {
-    // Check auth status on load
-    checkAuth()
+    // Load stored auth
+    const stored = localStorage.getItem(STORAGE_KEY)
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored)
+        if (parsed.tokens?.expires_at > Date.now()) {
+          setAuth(parsed)
+        } else {
+          localStorage.removeItem(STORAGE_KEY)
+        }
+      } catch (e) {
+        localStorage.removeItem(STORAGE_KEY)
+      }
+    }
     
     // Handle OAuth callback
     const urlParams = new URLSearchParams(window.location.search)
@@ -86,17 +105,17 @@ export default function App() {
     }
   }, [])
 
-  const checkAuth = async () => {
-    try {
-      const res = await fetch('/api/auth/status')
-      const data = await res.json()
-      setAuth(data)
-    } catch (e) {
-      console.log('Auth check failed')
+  const saveAuth = (newAuth: AuthState) => {
+    setAuth(newAuth)
+    if (newAuth.isAuthenticated) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(newAuth))
+    } else {
+      localStorage.removeItem(STORAGE_KEY)
     }
   }
 
   const handleOAuthCallback = async (code: string) => {
+    setIsLoading(true)
     try {
       const res = await fetch('/api/auth/callback', {
         method: 'POST',
@@ -105,12 +124,20 @@ export default function App() {
       })
       const data = await res.json()
       if (data.success) {
-        setAuth({ isAuthenticated: true, user: data.user })
+        saveAuth({ 
+          isAuthenticated: true, 
+          user: data.user,
+          tokens: data.tokens
+        })
         window.history.replaceState({}, '', '/')
         addMessage('assistant', '✅ Successfully connected! You can now ask me to read emails, check your calendar, send messages, and more.')
+      } else {
+        addMessage('assistant', `❌ ${data.error || 'Failed to connect'}`)
       }
     } catch (e) {
       addMessage('assistant', '❌ Failed to connect your account. Please try again.')
+    } finally {
+      setIsLoading(false)
     }
   }
 
@@ -118,20 +145,19 @@ export default function App() {
     try {
       const res = await fetch('/api/auth/url')
       const data = await res.json()
-      window.location.href = data.url
+      if (data.url) {
+        window.location.href = data.url
+      } else {
+        addMessage('assistant', `❌ ${data.error || 'Could not get auth URL'}`)
+      }
     } catch (e) {
       addMessage('assistant', '❌ Could not initiate Google sign-in. Please try again.')
     }
   }
 
-  const handleDisconnect = async () => {
-    try {
-      await fetch('/api/auth/logout', { method: 'POST' })
-      setAuth({ isAuthenticated: false })
-      addMessage('assistant', '👋 Disconnected. Connect again anytime!')
-    } catch (e) {
-      console.log('Logout failed')
-    }
+  const handleDisconnect = () => {
+    saveAuth({ isAuthenticated: false })
+    addMessage('assistant', '👋 Disconnected. Connect again anytime!')
   }
 
   const addMessage = (role: 'user' | 'assistant', content: string, data?: Message['data']) => {
@@ -159,11 +185,19 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           message: userMessage,
-          history: messages.slice(-10)
+          tokens: auth.tokens
         })
       })
 
       const data = await res.json()
+      
+      // Update tokens if refreshed
+      if (data.newTokens) {
+        saveAuth({
+          ...auth,
+          tokens: data.newTokens
+        })
+      }
       
       if (data.error) {
         addMessage('assistant', `❌ ${data.error}`)
@@ -212,7 +246,7 @@ export default function App() {
                   {auth.user?.picture && (
                     <img src={auth.user.picture} alt="" className="w-8 h-8 rounded-full" />
                   )}
-                  <span className="text-sm text-white/80">{auth.user?.email}</span>
+                  <span className="text-sm text-white/80 hidden sm:inline">{auth.user?.email}</span>
                 </div>
                 <button
                   onClick={handleDisconnect}
@@ -261,12 +295,12 @@ export default function App() {
                   <div className="mt-4 space-y-2">
                     {message.data.emails.map((email) => (
                       <div key={email.id} className="bg-black/20 rounded-lg p-3">
-                        <div className="flex items-start justify-between">
-                          <div className="font-medium text-purple-300">{email.from}</div>
-                          <div className="text-xs text-white/50">{email.date}</div>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="font-medium text-purple-300 truncate flex-1">{email.from}</div>
+                          <div className="text-xs text-white/50 whitespace-nowrap">{email.date}</div>
                         </div>
                         <div className="font-medium mt-1">{email.subject}</div>
-                        <div className="text-sm text-white/70 mt-1">{email.snippet}</div>
+                        <div className="text-sm text-white/70 mt-1 line-clamp-2">{email.snippet}</div>
                       </div>
                     ))}
                   </div>
@@ -279,14 +313,14 @@ export default function App() {
                       <div key={event.id} className="bg-black/20 rounded-lg p-3">
                         <div className="font-medium text-purple-300">{event.summary}</div>
                         <div className="text-sm text-white/70 mt-1">
-                          📅 {event.start} - {event.end}
+                          📅 {event.start} — {event.end}
                         </div>
                         {event.location && (
                           <div className="text-sm text-white/70">📍 {event.location}</div>
                         )}
                         {event.attendees && event.attendees.length > 0 && (
-                          <div className="text-sm text-white/70">
-                            👥 {event.attendees.join(', ')}
+                          <div className="text-sm text-white/70 truncate">
+                            👥 {event.attendees.slice(0, 3).join(', ')}{event.attendees.length > 3 ? ` +${event.attendees.length - 3} more` : ''}
                           </div>
                         )}
                       </div>
